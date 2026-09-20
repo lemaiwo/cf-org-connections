@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CF Session Hub</title>
+    <link rel="icon" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>CF Session Hub</h1>
+      <p class="root" id="root-path">&nbsp;</p>
+      <span class="stream" id="stream-state" data-state="connecting">connecting</span>
+    </header>
+
+    <main>
+      <section id="entries" class="entries" aria-live="polite">
+        <p class="empty" id="empty-state">Loading CF home directories…</p>
+      </section>
+
+      <section class="panel">
+        <h2>Add an organization</h2>
+        <form id="add-form" class="add-form" autocomplete="off">
+          <label>
+            Name <small>(directory name under the root)</small>
+            <input name="name" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*" placeholder="acme-prod" />
+          </label>
+          <label>
+            API endpoint
+            <input name="api" required type="url" placeholder="https://api.cf.eu10.hana.ondemand.com" />
+          </label>
+          <label>
+            Default org <small>(optional)</small>
+            <input name="org" placeholder="acme" />
+          </label>
+          <label>
+            Default space <small>(optional)</small>
+            <input name="space" placeholder="prod" />
+          </label>
+          <button type="submit">Add entry</button>
+          <p class="form-error" id="add-error" role="alert"></p>
+        </form>
+      </section>
+    </main>
+
+    <dialog id="login-dialog">
+      <form method="dialog" id="login-form">
+        <h2 id="login-title">Log in</h2>
+        <p id="login-message">Opening your browser…</p>
+        <p class="passcode-link">
+          <a id="passcode-url" href="#" target="_blank" rel="noreferrer noopener">Open the passcode page</a>
+        </p>
+        <label>
+          One-time passcode
+          <input id="passcode-input" name="passcode" autocomplete="off" spellcheck="false" />
+        </label>
+        <p class="form-error" id="login-error" role="alert"></p>
+        <menu>
+          <button value="cancel" type="submit" class="secondary">Cancel</button>
+          <button value="reopen" type="button" id="reopen-browser" class="secondary">Reopen browser</button>
+          <button value="submit" type="button" id="submit-passcode">Finish login</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <p class="toast" id="toast" role="status"></p>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

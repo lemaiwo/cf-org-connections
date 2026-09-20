@@ -1,0 +1,11 @@
+{
+  "name": "@cf-session-hub/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CF Session Hub dashboard: a static page served by the core service",
+  "type": "module",
+  "exports": {
+    "./public/*": "./public/*"
+  },
+  "files": ["public"]
+}

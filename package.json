@@ -1,0 +1,24 @@
+{
+  "name": "cf-session-hub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Manage Cloud Foundry sessions for multiple organizations and hand a ready CF_HOME to Claude Code",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/core",
+    "packages/web",
+    "packages/cli"
+  ],
+  "scripts": {
+    "prepare": "npm run build",
+    "build": "npm run build --workspaces --if-present",
+    "clean": "rm -rf packages/*/dist packages/*/tsconfig.tsbuildinfo",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run build && npm run test --workspaces --if-present",
+    "start": "node packages/core/dist/src/bin/cf-session-hub.js",
+    "dev": "npm run build && node packages/core/dist/src/bin/cf-session-hub.js"
+  }
+}
