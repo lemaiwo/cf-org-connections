@@ -16,7 +16,13 @@ import {
 } from './entries.js';
 import { buildHandoff } from './handoff.js';
 import { isValidPasscode, LoginEndpointError, passcodeUrl, resolveLoginEndpoint } from './login.js';
-import type { Entry, Handoff, HubMeta, VerifyResult } from './types.js';
+import {
+  CfListError,
+  listOrgs as cfListOrgs,
+  listSpaces as cfListSpaces,
+  targetArgs,
+} from './targets.js';
+import type { CfTarget, Entry, Handoff, HubMeta, VerifyResult } from './types.js';
 
 /** A request the hub rejects with a 4xx and a message the UI can show. */
 export class HubError extends Error {
@@ -75,13 +81,13 @@ export class Hub {
   }
 
   async listEntries(): Promise<Entry[]> {
-    return loadEntries(this.config.root, (id) => this.#runtimeFor(id));
+    return loadEntries(this.config.root, this.config.paths, (id) => this.#runtimeFor(id));
   }
 
   /** Loads one entry or throws a 404-shaped error. */
   async requireEntry(id: string): Promise<Entry> {
     if (!isValidEntryId(id)) throw new HubError(`Invalid entry name: ${id}`, 400);
-    const entry = await loadEntry(this.config.root, id, this.#runtimeFor(id));
+    const entry = await loadEntry(this.config.root, this.config.paths, id, this.#runtimeFor(id));
     if (!entry) throw new HubError(`No such entry: ${id}`, 404);
     return entry;
   }
@@ -106,7 +112,7 @@ export class Hub {
       throw new HubError('API endpoint must be an http(s) URL, for example https://api.cf.example.com.');
     }
     const dir = entryPath(this.config.root, name);
-    const existing = await loadEntry(this.config.root, name, this.#runtimeFor(name));
+    const existing = await loadEntry(this.config.root, this.config.paths, name, this.#runtimeFor(name));
     if (existing) throw new HubError(`An entry named ${name} already exists.`, 409);
 
     await mkdir(dir, { recursive: true });
@@ -228,6 +234,63 @@ export class Hub {
     runtime.loginState = 'idle';
     runtime.lastError = null;
     runtime.lastVerifiedAt = new Date().toISOString();
+    return this.#publishEntry(id);
+  }
+
+  /** Organizations this entry's session can see. */
+  async listOrgs(id: string): Promise<CfTarget[]> {
+    const entry = await this.requireEntry(id);
+    return this.#listing(id, () => cfListOrgs(entry.path));
+  }
+
+  /** Spaces of one organization, for the second dropdown. */
+  async listSpaces(id: string, orgGuid: string): Promise<CfTarget[]> {
+    const entry = await this.requireEntry(id);
+    const guid = orgGuid?.trim() ?? '';
+    if (!guid) throw new HubError('Choose an organization before listing its spaces.');
+    return this.#listing(id, () => cfListSpaces(entry.path, guid));
+  }
+
+  /**
+   * Runs a listing, recording any failure on the entry so the dashboard shows
+   * it in the same place as every other per-entry error.
+   */
+  async #listing(id: string, run: () => Promise<CfTarget[]>): Promise<CfTarget[]> {
+    try {
+      return await run();
+    } catch (error) {
+      const message =
+        error instanceof CfListError ? error.message : (error as Error).message;
+      this.#runtimeFor(id).lastError = message;
+      await this.#publishEntry(id);
+      throw new HubError(message, 502);
+    }
+  }
+
+  /**
+   * Moves an entry to another org and space. The choice also becomes the
+   * entry's default, so the next login lands in the same place instead of
+   * silently reverting.
+   */
+  async setTarget(id: string, choice: { org: string; space: string | null }): Promise<Entry> {
+    const entry = await this.requireEntry(id);
+    const org = choice.org?.trim() ?? '';
+    if (!org) throw new HubError('Choose an organization to switch to.');
+    const space = choice.space?.trim() || null;
+
+    const runtime = this.#runtimeFor(id);
+    const result = await runCf(targetArgs(org, space), {
+      cfHome: entry.path,
+      timeoutMs: 60_000,
+    });
+    if (result.code !== 0) {
+      runtime.lastError = cfErrorMessage(result, `Could not switch to ${org}.`);
+      await this.#publishEntry(id);
+      throw new HubError(runtime.lastError, 400);
+    }
+
+    await writeHubMeta(entry.path, { defaultOrg: org, defaultSpace: space ?? '' });
+    runtime.lastError = null;
     return this.#publishEntry(id);
   }
 

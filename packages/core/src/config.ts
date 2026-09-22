@@ -1,11 +1,18 @@
 import { homedir } from 'node:os';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
+import { isValidEntryId } from './entries.js';
+import type { RegisteredPath } from './types.js';
 
 /** Runtime configuration of the hub itself, stored outside the CF home root. */
 export interface HubConfig {
   /** Root folder holding one subdirectory per organization. */
   root: string;
+  /**
+   * CF home directories adopted from outside the root, listed alongside the
+   * root's own subdirectories. The hub never moves or creates these.
+   */
+  paths: RegisteredPath[];
   /** Port the core service binds on 127.0.0.1. */
   port: number;
   /** How often keep-alive entries get a live check, in milliseconds. */
@@ -40,6 +47,27 @@ function positiveInt(value: unknown, fallback: number): number {
 }
 
 /**
+ * Reads the `paths` list. A malformed entry is dropped rather than rejected,
+ * so one bad line in a hand-edited config never hides the rest of the list.
+ */
+function readPaths(value: unknown): RegisteredPath[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const paths: RegisteredPath[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const { id, dir } = item as { id?: unknown; dir?: unknown };
+    if (typeof id !== 'string' || typeof dir !== 'string') continue;
+    const entryId = id.trim();
+    const entryDir = dir.trim();
+    if (!isValidEntryId(entryId) || !entryDir || seen.has(entryId)) continue;
+    seen.add(entryId);
+    paths.push({ id: entryId, dir: expandPath(entryDir) });
+  }
+  return paths;
+}
+
+/**
  * Loads the hub config, applying (in increasing precedence) defaults, the
  * config file and `CF_SESSION_HUB_*` environment variables. A missing or
  * unreadable config file is not an error: the defaults are used.
@@ -57,6 +85,7 @@ export async function loadConfig(): Promise<HubConfig> {
   const root = process.env.CF_SESSION_HUB_ROOT ?? fromFile.root ?? DEFAULT_ROOT;
   return {
     root: expandPath(root),
+    paths: readPaths(fromFile.paths),
     port: positiveInt(process.env.CF_SESSION_HUB_PORT ?? fromFile.port, DEFAULT_PORT),
     keepAliveIntervalMs: positiveInt(
       process.env.CF_SESSION_HUB_KEEPALIVE_MS ?? fromFile.keepAliveIntervalMs,

@@ -84,6 +84,19 @@ main { padding: 24px; display: grid; gap: 24px; max-width: 1100px; margin: 0 aut
 
 .meta { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
 .meta code { font-family: ui-monospace, Menlo, monospace; color: var(--text); }
+.meta .target { display: inline-flex; align-items: center; gap: 6px; }
+.meta .target select {
+  font: inherit;
+  font-family: ui-monospace, Menlo, monospace;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 2px 6px;
+  max-width: 220px;
+  cursor: pointer;
+}
+.meta .target select:disabled { color: var(--muted); cursor: default; opacity: 0.7; }
 .countdown { margin-left: auto; }
 
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }

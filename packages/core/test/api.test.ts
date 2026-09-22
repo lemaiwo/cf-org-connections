@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { startService, type StartedService } from '../src/service.js';
 
 function jwt(expSeconds: number): string {
@@ -33,7 +33,7 @@ async function makeRoot(): Promise<string> {
 async function withService(run: (service: StartedService) => Promise<void>): Promise<void> {
   const root = await makeRoot();
   const service = await startService({
-    config: { root, port: 0, keepAliveIntervalMs: 600_000, rescanIntervalMs: 600_000 },
+    config: { root, paths: [], port: 0, keepAliveIntervalMs: 600_000, rescanIntervalMs: 600_000 },
     schedulers: false,
   });
   try {
@@ -75,7 +75,7 @@ test('GET /api/entries/:id/handoff returns the export line and the CLAUDE.md sni
   await withService(async (service) => {
     const response = await fetch(`${service.url}/api/entries/acme-prod/handoff`);
     const body = (await response.json()) as { cfHome: string; exportLine: string; claudeMdSnippet: string };
-    assert.ok(body.cfHome.endsWith('/acme-prod'));
+    assert.ok(body.cfHome.endsWith(`${sep}acme-prod`));
     assert.equal(body.exportLine, `export CF_HOME=${body.cfHome}`);
     assert.ok(body.claudeMdSnippet.includes(body.cfHome));
     assert.ok(body.claudeMdSnippet.includes('Never run `cf login`'));

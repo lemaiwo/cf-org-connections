@@ -18,6 +18,24 @@ export interface CfConfig {
   SSLDisabled?: boolean;
 }
 
+/**
+ * A CF home directory adopted from outside the root folder. The hub reads and
+ * writes it exactly like a root subdirectory, but never moves or creates it:
+ * directories that already exist stay where they are.
+ */
+export interface RegisteredPath {
+  /** Entry id, and the name shown until a `hub.json` label overrides it. */
+  id: string;
+  /** Absolute path of the CF home directory. */
+  dir: string;
+}
+
+/** An organization or space as the CF v3 API reports it. */
+export interface CfTarget {
+  guid: string;
+  name: string;
+}
+
 /** Optional hub metadata stored next to the cf config, in `<dir>/hub.json`. */
 export interface HubMeta {
   label?: string;

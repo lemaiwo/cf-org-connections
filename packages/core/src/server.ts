@@ -123,6 +123,24 @@ export async function buildServer(hub: Hub, options: BuildServerOptions = {}): P
     return { entry: await hub.logout(id) };
   });
 
+  app.get('/api/entries/:id/orgs', async (request) => {
+    const { id } = request.params as { id: string };
+    return { orgs: await hub.listOrgs(id) };
+  });
+
+  app.get('/api/entries/:id/spaces', async (request) => {
+    const { id } = request.params as { id: string };
+    const { org } = request.query as { org?: string };
+    return { spaces: await hub.listSpaces(id, org ?? '') };
+  });
+
+  app.post('/api/entries/:id/target', async (request) => {
+    const { id } = request.params as { id: string };
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const space = body.space === undefined || body.space === null ? null : String(body.space);
+    return { entry: await hub.setTarget(id, { org: String(body.org ?? ''), space }) };
+  });
+
   app.get('/api/entries/:id/handoff', async (request) => {
     const { id } = request.params as { id: string };
     return await hub.handoff(id);

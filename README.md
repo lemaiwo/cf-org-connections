@@ -75,6 +75,9 @@ you can go straight to:
 cfhub list                    # every entry with status, org/space and expiry
 cfhub login acme-prod         # opens the browser, then prompts for the passcode
 eval $(cfhub env acme-prod)   # sets CF_HOME in the current shell
+cfhub orgs acme-prod          # organizations this session can see
+cfhub target acme-prod        # pick org, then space, from numbered lists
+cfhub target acme-prod -o acme -s prod
 cfhub verify                  # live check for every entry (also refreshes tokens)
 cfhub logout acme-prod
 cfhub snippet acme-prod       # the CLAUDE.md block for a project
@@ -106,6 +109,28 @@ Optional hub metadata per entry lives in `<dir>/hub.json`:
 Entries can be created from the dashboard (new directory + `hub.json`) or simply discovered from
 directories that already exist.
 
+### Adopting CF home directories from elsewhere
+
+CF home directories that already live outside the root do not have to move. List them under
+`paths` in the hub config and they appear beside the root's own subdirectories:
+
+```json
+{
+  "paths": [
+    { "id": "elia", "dir": "~/.cf-elia" },
+    { "id": "ec",   "dir": "~/.ec" }
+  ]
+}
+```
+
+`id` is the entry id and its default label; `dir` is the CF home directory itself — the folder that
+*contains* `.cf/config.json`, not the `.cf` folder. For the cf CLI's default session that is your
+home directory (`~`), because its config is `~/.cf/config.json`.
+
+The hub reads and writes an adopted directory exactly like a root subdirectory, but never creates
+or moves one: a `dir` that does not exist is skipped rather than reported as an error. When an
+adopted `id` matches a root subdirectory, the adopted directory wins.
+
 ### Status
 
 | Status | Rule |
@@ -118,16 +143,42 @@ directories that already exist.
 The live check is `CF_HOME=<dir> cf curl /v3/organizations?per_page=1`. Running it makes the cf CLI
 refresh the access token itself.
 
+## Switching org and space
+
+Each entry's card carries an **Org** and a **Space** dropdown, and `cfhub target` does the same
+from the terminal. Both call `cf target` for that `CF_HOME` and then store the choice as the
+entry's `defaultOrg`/`defaultSpace`, so the next login lands in the same place instead of
+reverting.
+
+Choosing an org targets it immediately and leaves no space selected, exactly as `cf target -o`
+does; the space dropdown then lists that org's spaces. The lists come from `/v3/organizations`
+and `/v3/spaces` on first use rather than on every dashboard load, since each costs a live cf
+call. A switch made in one client reaches the others over `/api/events`.
+
+`cfhub target <entry>` prompts with numbered lists. Passing `-o` without `-s` is a plain org
+switch and never prompts, so it is safe in a script.
+
 ## Configuration
 
 `~/.config/cf-session-hub/config.json` — created on demand, every field optional:
 
 ```json
-{ "root": "~/.cf-homes", "port": 4790, "keepAliveIntervalMs": 600000, "rescanIntervalMs": 30000 }
+{
+  "root": "~/.cf-homes",
+  "paths": [{ "id": "elia", "dir": "~/.cf-elia" }],
+  "port": 4790,
+  "keepAliveIntervalMs": 600000,
+  "rescanIntervalMs": 30000
+}
 ```
 
+`paths` adopts CF home directories that live outside the root — see
+[Adopting CF home directories from elsewhere](#adopting-cf-home-directories-from-elsewhere). A
+malformed entry in the list is dropped rather than rejected, so one bad line never hides the rest.
+
 Environment variables override the file: `CF_SESSION_HUB_ROOT`, `CF_SESSION_HUB_PORT`,
-`CF_SESSION_HUB_KEEPALIVE_MS`, `CF_SESSION_HUB_RESCAN_MS`, `CF_SESSION_HUB_CONFIG`.
+`CF_SESSION_HUB_KEEPALIVE_MS`, `CF_SESSION_HUB_RESCAN_MS`, `CF_SESSION_HUB_CONFIG`. `paths` has no
+environment override: it is a list, and the config file is its home.
 `cfhub` also honours `CF_SESSION_HUB_URL` to talk to an already-running service.
 
 ## REST API
@@ -146,6 +197,9 @@ timestamps only.
 | POST | `/api/entries/:id/login/complete` | Body `{ passcode }`; finishes login and targets org/space |
 | POST | `/api/entries/:id/verify` | Live check; triggers the CLI's token refresh |
 | POST | `/api/entries/:id/logout` | `cf logout` for that directory |
+| GET | `/api/entries/:id/orgs` | Organizations this session can see |
+| GET | `/api/entries/:id/spaces?org=<guid>` | Spaces of one organization |
+| POST | `/api/entries/:id/target` | Body `{ org, space? }`; switches org/space and stores it as the default |
 | GET | `/api/entries/:id/handoff` | The `export CF_HOME=…` line and the CLAUDE.md snippet |
 | GET | `/api/events` | Server-sent events stream of status changes |
 

@@ -1,7 +1,14 @@
 import { readdir, readFile, mkdir, writeFile, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { tokenExpiryMs } from './jwt.js';
-import type { CfConfig, Entry, EntryStatus, HubMeta, LoginState } from './types.js';
+import type {
+  CfConfig,
+  Entry,
+  EntryStatus,
+  HubMeta,
+  LoginState,
+  RegisteredPath,
+} from './types.js';
 
 /** An access token this close to expiry no longer counts as `active`. */
 export const ACTIVE_MARGIN_MS = 5 * 60 * 1000;
@@ -31,17 +38,37 @@ export function isValidEntryId(id: string): boolean {
   return ID_PATTERN.test(id);
 }
 
-/** Absolute path of an entry's CF home directory. */
+/**
+ * Absolute path of an entry's directory under the root folder. Containment is
+ * checked with `relative()` rather than a string prefix, so it holds on
+ * Windows, where paths are separated by `\` and not `/`.
+ */
 export function entryPath(root: string, id: string): string {
   if (!isValidEntryId(id)) {
     throw new Error(`Invalid entry name: ${id}`);
   }
-  const path = resolve(root, id);
   const rootResolved = resolve(root);
-  if (path !== rootResolved && !path.startsWith(`${rootResolved}/`)) {
+  const path = resolve(rootResolved, id);
+  const rel = relative(rootResolved, path);
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error(`Invalid entry name: ${id}`);
   }
   return path;
+}
+
+/**
+ * Directory an entry id points at. A registered path wins over a subdirectory
+ * of the root with the same id, so an adopted directory always keeps its own
+ * location.
+ */
+export function resolveEntryDir(
+  root: string,
+  registered: readonly RegisteredPath[],
+  id: string,
+): string {
+  const match = registered.find((p) => p.id === id);
+  if (match) return resolve(match.dir);
+  return entryPath(root, id);
 }
 
 /** Reads the cf CLI's own config for a CF home directory. */
@@ -128,45 +155,59 @@ export function buildEntry(
 /** Reads one entry from disk. Returns null when the directory does not exist. */
 export async function loadEntry(
   root: string,
+  registered: readonly RegisteredPath[],
   id: string,
   runtime: EntryRuntime,
 ): Promise<Entry | null> {
-  const path = entryPath(root, id);
-  try {
-    const info = await stat(path);
-    if (!info.isDirectory()) return null;
-  } catch {
-    return null;
-  }
+  const path = resolveEntryDir(root, registered, id);
+  if (!(await isDirectory(path))) return null;
   const [config, meta] = await Promise.all([readCfConfig(path), readHubMeta(path)]);
   return buildEntry(id, path, config, meta, runtime);
 }
 
 /**
- * Lists every subdirectory of the root as an entry. A missing root is treated
- * as an empty list rather than an error, so a first run works out of the box.
+ * Lists every subdirectory of the root plus every registered path as an entry.
+ * A missing root is treated as an empty list rather than an error, so a first
+ * run works out of the box; a registered directory that has gone away is
+ * skipped for the same reason.
  */
 export async function loadEntries(
   root: string,
+  registered: readonly RegisteredPath[],
   runtimeFor: (id: string) => EntryRuntime,
 ): Promise<Entry[]> {
-  let dirents;
+  const dirs = new Map<string, string>();
   try {
-    dirents = await readdir(root, { withFileTypes: true });
+    for (const dirent of await readdir(root, { withFileTypes: true })) {
+      if (!dirent.isDirectory()) continue;
+      if (dirent.name.startsWith('.') || !isValidEntryId(dirent.name)) continue;
+      dirs.set(dirent.name, join(root, dirent.name));
+    }
   } catch {
-    return [];
+    // No root folder yet: registered paths alone still make a list.
   }
-  const ids = dirents
-    .filter((d) => d.isDirectory() && !d.name.startsWith('.') && isValidEntryId(d.name))
-    .map((d) => d.name)
-    .sort((a, b) => a.localeCompare(b));
+  // Registered paths are set last, so they win over a same-named root subdirectory.
+  for (const path of registered) {
+    if (!isValidEntryId(path.id)) continue;
+    dirs.set(path.id, resolve(path.dir));
+  }
 
+  const ids = [...dirs.keys()].sort((a, b) => a.localeCompare(b));
   const entries = await Promise.all(
     ids.map(async (id) => {
-      const path = join(root, id);
+      const path = dirs.get(id) as string;
+      if (!(await isDirectory(path))) return null;
       const [config, meta] = await Promise.all([readCfConfig(path), readHubMeta(path)]);
       return buildEntry(id, path, config, meta, runtimeFor(id));
     }),
   );
-  return entries;
+  return entries.filter((entry): entry is Entry => entry !== null);
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
 }

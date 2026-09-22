@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test, { after, before } from 'node:test';
 import { chmod, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { Hub } from '../src/hub.js';
 import type { CfConfig } from '../src/types.js';
 
@@ -68,7 +68,22 @@ if (command === 'version') {
   }
   // A real cf CLI refreshes the access token on every command; so does the stub.
   write({ ...config, AccessToken: jwt(3600) });
-  process.stdout.write(JSON.stringify({ pagination: { total_results: 1 }, resources: [{ name: 'acme' }] }));
+  const path = args[1] || '';
+  if (path.indexOf('/v3/organizations') === 0) {
+    process.stdout.write(JSON.stringify({ pagination: { next: null }, resources: [
+      { guid: 'org-1', name: 'acme-org' },
+      { guid: 'org-2', name: 'beta-org' },
+    ] }));
+  } else if (path.indexOf('/v3/spaces') === 0) {
+    const match = /organization_guids=([^&]*)/.exec(path);
+    const org = match ? decodeURIComponent(match[1]) : '';
+    const spaces = org === 'org-1'
+      ? [{ guid: 'space-1', name: 'dev' }, { guid: 'space-2', name: 'prod' }]
+      : [{ guid: 'space-3', name: 'beta-only' }];
+    process.stdout.write(JSON.stringify({ pagination: { next: null }, resources: spaces }));
+  } else {
+    process.stdout.write(JSON.stringify({ pagination: { total_results: 1 }, resources: [{ name: 'acme' }] }));
+  }
 } else if (command === 'logout') {
   const config = read();
   delete config.AccessToken;
@@ -85,22 +100,30 @@ let originalPath: string | undefined;
 
 before(async () => {
   const binDir = await mkdtemp(join(tmpdir(), 'cf-stub-'));
+  await writeFile(join(binDir, 'cf-stub.mjs'), STUB);
   const stubPath = join(binDir, 'cf');
-  await writeFile(stubPath, STUB);
+  await writeFile(stubPath, `#!/bin/sh\nexec node "$(dirname "$0")/cf-stub.mjs" "$@"\n`);
   await chmod(stubPath, 0o755);
-  // The stub is ESM; give it a package marker so node runs it as such.
-  await writeFile(join(binDir, 'package.json'), JSON.stringify({ type: 'module' }));
   originalPath = process.env.PATH;
-  process.env.PATH = `${binDir}:${process.env.PATH ?? ''}`;
+  process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ''}`;
 });
 
 after(() => {
   process.env.PATH = originalPath;
 });
 
+/**
+ * The stub is a POSIX shell script. Node refuses to spawn a .cmd shim without
+ * a shell, and giving runCf a shell would put passcodes through shell quoting,
+ * so on Windows these tests are skipped rather than run against the real cf.
+ */
+const posixOnly = {
+  skip: process.platform === "win32" ? "needs a POSIX cf stub on PATH" : false,
+};
+
 async function makeHub(): Promise<Hub> {
   const root = await mkdtemp(join(tmpdir(), 'cf-session-hub-flow-'));
-  const hub = new Hub({ root, port: 0, keepAliveIntervalMs: 600_000, rescanIntervalMs: 600_000 });
+  const hub = new Hub({ root, paths: [], port: 0, keepAliveIntervalMs: 600_000, rescanIntervalMs: 600_000 });
   await hub.init();
   return hub;
 }
@@ -109,7 +132,7 @@ async function readConfig(path: string): Promise<CfConfig> {
   return JSON.parse(await readFile(join(path, '.cf', 'config.json'), 'utf8')) as CfConfig;
 }
 
-test('a fresh entry starts unknown and becomes active after a passcode login', async () => {
+test('a fresh entry starts unknown and becomes active after a passcode login', posixOnly, async () => {
   const hub = await makeHub();
   const created = await hub.createEntry({
     name: 'acme',
@@ -133,7 +156,7 @@ test('a fresh entry starts unknown and becomes active after a passcode login', a
   assert.ok(config.AccessToken?.startsWith('bearer '));
 });
 
-test('a rejected passcode keeps the entry in waiting_passcode with a usable message', async () => {
+test('a rejected passcode keeps the entry in waiting_passcode with a usable message', posixOnly, async () => {
   const hub = await makeHub();
   await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com' });
 
@@ -145,7 +168,7 @@ test('a rejected passcode keeps the entry in waiting_passcode with a usable mess
   assert.ok(!(entry.lastError ?? '').includes('WRONGCODE'));
 });
 
-test('the passcode never reaches an error message', async () => {
+test('the passcode never reaches an error message', posixOnly, async () => {
   const hub = await makeHub();
   await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com' });
   await assert.rejects(() => hub.completeLogin('acme', 'SUPERSECRETPASSCODE'), (error: Error) => {
@@ -154,7 +177,7 @@ test('the passcode never reaches an error message', async () => {
   });
 });
 
-test('a failed target leaves the entry logged in and reports the problem', async () => {
+test('a failed target leaves the entry logged in and reports the problem', posixOnly, async () => {
   const hub = await makeHub();
   await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com', org: 'missing-org' });
   const entry = await hub.completeLogin('acme', 'GOODCODE');
@@ -162,7 +185,7 @@ test('a failed target leaves the entry logged in and reports the problem', async
   assert.match(entry.lastError ?? '', /Organization missing-org not found/);
 });
 
-test('verify refreshes the token and reports an unusable session as an error', async () => {
+test('verify refreshes the token and reports an unusable session as an error', posixOnly, async () => {
   const hub = await makeHub();
   await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com' });
   await hub.completeLogin('acme', 'GOODCODE');
@@ -178,7 +201,7 @@ test('verify refreshes the token and reports an unusable session as an error', a
   assert.match(after.error ?? '', /Invalid Auth Token/);
 });
 
-test('logout clears the session and the entry reports it', async () => {
+test('logout clears the session and the entry reports it', posixOnly, async () => {
   const hub = await makeHub();
   await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com', org: 'acme-org' });
   await hub.completeLogin('acme', 'GOODCODE');
@@ -189,7 +212,7 @@ test('logout clears the session and the entry reports it', async () => {
   assert.equal(entry.lastVerifiedAt, null);
 });
 
-test('keep-alive verifies only the entries that opted in, and broadcasts', async () => {
+test('keep-alive verifies only the entries that opted in, and broadcasts', posixOnly, async () => {
   const hub = await makeHub();
   await hub.createEntry({ name: 'watched', api: 'https://api.cf.example.com', keepAlive: true });
   await hub.createEntry({ name: 'ignored', api: 'https://api.cf.example.com', keepAlive: false });
@@ -216,4 +239,98 @@ test('keep-alive verifies only the entries that opted in, and broadcasts', async
   assert.equal((await hub.requireEntry('watched')).status, 'active');
   // The opted-out entry was left untouched by the pass.
   assert.equal((await hub.requireEntry('ignored')).lastVerifiedAt, ignoredBefore);
+});
+
+test('the org list comes back from the CF API', posixOnly, async () => {
+  const hub = await makeHub();
+  await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com' });
+  await hub.completeLogin('acme', 'GOODCODE');
+
+  assert.deepEqual(await hub.listOrgs('acme'), [
+    { guid: 'org-1', name: 'acme-org' },
+    { guid: 'org-2', name: 'beta-org' },
+  ]);
+});
+
+test('spaces are listed for one organization only', posixOnly, async () => {
+  const hub = await makeHub();
+  await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com' });
+  await hub.completeLogin('acme', 'GOODCODE');
+
+  assert.deepEqual(await hub.listSpaces('acme', 'org-1'), [
+    { guid: 'space-1', name: 'dev' },
+    { guid: 'space-2', name: 'prod' },
+  ]);
+  assert.deepEqual(await hub.listSpaces('acme', 'org-2'), [{ guid: 'space-3', name: 'beta-only' }]);
+});
+
+test('listing orgs on a logged-out entry says to log in, rather than reading empty', posixOnly, async () => {
+  const hub = await makeHub();
+  await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com' });
+  await hub.completeLogin('acme', 'GOODCODE');
+  await hub.logout('acme');
+
+  await assert.rejects(() => hub.listOrgs('acme'), /Invalid Auth Token/);
+});
+
+test('switching target moves the entry to the new org and space', posixOnly, async () => {
+  const hub = await makeHub();
+  await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com', org: 'acme-org', space: 'dev' });
+  await hub.completeLogin('acme', 'GOODCODE');
+
+  const switched = await hub.setTarget('acme', { org: 'beta-org', space: 'beta-only' });
+  assert.equal(switched.org, 'beta-org');
+  assert.equal(switched.space, 'beta-only');
+});
+
+test('switching target stores the choice as the entry default', posixOnly, async () => {
+  const hub = await makeHub();
+  await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com', org: 'acme-org', space: 'dev' });
+  await hub.completeLogin('acme', 'GOODCODE');
+
+  const switched = await hub.setTarget('acme', { org: 'beta-org', space: 'beta-only' });
+  assert.equal(switched.defaultOrg, 'beta-org');
+  assert.equal(switched.defaultSpace, 'beta-only');
+
+  const meta = JSON.parse(await readFile(join(switched.path, 'hub.json'), 'utf8')) as Record<string, unknown>;
+  assert.equal(meta.defaultOrg, 'beta-org');
+  assert.equal(meta.defaultSpace, 'beta-only');
+});
+
+test('a switched target survives the next login', posixOnly, async () => {
+  const hub = await makeHub();
+  await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com', org: 'acme-org', space: 'dev' });
+  await hub.completeLogin('acme', 'GOODCODE');
+  await hub.setTarget('acme', { org: 'beta-org', space: 'beta-only' });
+
+  // completeLogin re-targets from the stored defaults, so the switch must stick.
+  const again = await hub.completeLogin('acme', 'GOODCODE');
+  assert.equal(again.org, 'beta-org');
+  assert.equal(again.space, 'beta-only');
+});
+
+test('switching to an org alone clears the space', posixOnly, async () => {
+  const hub = await makeHub();
+  await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com', org: 'acme-org', space: 'dev' });
+  await hub.completeLogin('acme', 'GOODCODE');
+
+  const switched = await hub.setTarget('acme', { org: 'beta-org', space: null });
+  assert.equal(switched.org, 'beta-org');
+  assert.equal(switched.defaultSpace, null);
+});
+
+test('switching to an org the CF API rejects reports the cf error', posixOnly, async () => {
+  const hub = await makeHub();
+  await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com' });
+  await hub.completeLogin('acme', 'GOODCODE');
+
+  await assert.rejects(() => hub.setTarget('acme', { org: 'missing-org', space: null }), /missing-org not found/);
+});
+
+test('switching target refuses an empty org', posixOnly, async () => {
+  const hub = await makeHub();
+  await hub.createEntry({ name: 'acme', api: 'https://api.cf.example.com' });
+  await hub.completeLogin('acme', 'GOODCODE');
+
+  await assert.rejects(() => hub.setTarget('acme', { org: '   ', space: 'dev' }), /organization/i);
 });

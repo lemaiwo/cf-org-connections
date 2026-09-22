@@ -23,6 +23,56 @@ const passcodeLink = document.getElementById('passcode-url');
 const entries = new Map();
 let loginTarget = null;
 
+/**
+ * id -> the org/space lists for one entry.
+ *
+ * Listing orgs costs a live cf call, so it happens the first time a dropdown
+ * is touched rather than on every dashboard load. Until then the selects show
+ * the entry's current org and space, which is all the common case needs.
+ */
+const targetLists = new Map();
+
+function listsFor(id) {
+  let lists = targetLists.get(id);
+  if (!lists) {
+    lists = { orgs: null, spaces: new Map(), loading: false, busy: false };
+    targetLists.set(id, lists);
+  }
+  return lists;
+}
+
+function option(value, text) {
+  const el = document.createElement('option');
+  el.value = value;
+  el.textContent = text;
+  return el;
+}
+
+/**
+ * Renders one target dropdown. The selection always follows the entry's live
+ * value, so an switch made elsewhere (the CLI, another tab) wins here too.
+ */
+function renderTargetSelect(select, items, current, placeholder) {
+  const match = items.find((item) => item.name === current);
+  const wanted = match ? [] : [['', current || placeholder]];
+  for (const item of items) wanted.push([item.guid, item.name]);
+
+  // Rewrite the options only when they actually differ. Rendering runs on
+  // every status tick, and replacing the children of a dropdown the user has
+  // open would close it; leaving it alone when nothing changed does not.
+  const present = [...select.options].map((entry) => [entry.value, entry.textContent]);
+  const unchanged =
+    present.length === wanted.length &&
+    present.every((entry, index) => entry[0] === wanted[index][0] && entry[1] === wanted[index][1]);
+  if (!unchanged) {
+    select.replaceChildren();
+    for (const [value, text] of wanted) select.appendChild(option(value, text));
+  }
+
+  const selected = match ? match.guid : '';
+  if (select.value !== selected) select.value = selected;
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -105,8 +155,8 @@ function buildCard(id) {
     </div>
     <div class="meta">
       <span>API <code data-field="api"></code></span>
-      <span>Org <code data-field="org"></code></span>
-      <span>Space <code data-field="space"></code></span>
+      <label class="target">Org <select data-field="org"></select></label>
+      <label class="target">Space <select data-field="space"></select></label>
     </div>
     <p class="entry-error" hidden></p>
     <div class="actions">
@@ -127,6 +177,13 @@ function buildCard(id) {
   el.querySelector('input[data-action="keepalive"]').addEventListener('change', (event) => {
     void setKeepAlive(id, event.target.checked);
   });
+
+  const orgSelect = el.querySelector('select[data-field="org"]');
+  const spaceSelect = el.querySelector('select[data-field="space"]');
+  // First touch loads the lists; the options appear when the dropdown reopens.
+  orgSelect.addEventListener('focus', () => void loadOrgs(id));
+  orgSelect.addEventListener('change', () => void chooseOrg(id, orgSelect));
+  spaceSelect.addEventListener('change', () => void chooseSpace(id, orgSelect, spaceSelect));
   return el;
 }
 
@@ -138,8 +195,29 @@ function updateCard(el, entry) {
   badge.dataset.status = entry.status;
   el.querySelector('.countdown').textContent = countdown(entry);
   el.querySelector('[data-field="api"]').textContent = entry.api ?? '—';
-  el.querySelector('[data-field="org"]').textContent = entry.org ?? entry.defaultOrg ?? '—';
-  el.querySelector('[data-field="space"]').textContent = entry.space ?? entry.defaultSpace ?? '—';
+
+  const lists = listsFor(entry.id);
+  const switchable =
+    (entry.status === 'active' || entry.status === 'refreshable') && entry.loginState === 'idle';
+
+  const orgSelect = el.querySelector('select[data-field="org"]');
+  renderTargetSelect(
+    orgSelect,
+    lists.orgs ?? [],
+    entry.org ?? entry.defaultOrg ?? '',
+    lists.loading ? 'loading…' : '—',
+  );
+  orgSelect.disabled = !switchable || lists.busy;
+
+  const spaceSelect = el.querySelector('select[data-field="space"]');
+  const orgGuid = orgSelect.value;
+  renderTargetSelect(
+    spaceSelect,
+    (orgGuid && lists.spaces.get(orgGuid)) || [],
+    entry.space ?? entry.defaultSpace ?? '',
+    '—',
+  );
+  spaceSelect.disabled = orgSelect.disabled || !orgGuid;
 
   const error = el.querySelector('.entry-error');
   error.textContent = entry.lastError ?? '';
@@ -166,6 +244,8 @@ async function onAction(button, id) {
       toast(result.ok ? `${entry.label} is usable` : `${entry.label}: ${result.error}`);
     } else if (action === 'logout') {
       await api(`/api/entries/${encodeURIComponent(id)}/logout`, { method: 'POST' });
+      // A different session may see different orgs, so the lists start over.
+      targetLists.delete(id);
       toast(`${entry.label} logged out`);
     } else if (action === 'copy-home') {
       const handoff = await api(`/api/entries/${encodeURIComponent(id)}/handoff`);
@@ -178,6 +258,80 @@ async function onAction(button, id) {
     toast(error.message);
   } finally {
     button.disabled = false;
+  }
+}
+
+/** Loads the org list once, then the spaces of whichever org is current. */
+async function loadOrgs(id) {
+  const lists = listsFor(id);
+  const entry = entries.get(id);
+  if (lists.orgs || lists.loading) return;
+  if (!entry || (entry.status !== 'active' && entry.status !== 'refreshable')) return;
+
+  lists.loading = true;
+  render();
+  try {
+    const { orgs } = await api(`/api/entries/${encodeURIComponent(id)}/orgs`);
+    lists.orgs = orgs;
+    const current = orgs.find((org) => org.name === (entry.org ?? entry.defaultOrg));
+    if (current) await loadSpaces(id, current.guid);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    lists.loading = false;
+    render();
+  }
+}
+
+async function loadSpaces(id, orgGuid) {
+  const lists = listsFor(id);
+  if (!orgGuid || lists.spaces.has(orgGuid)) return;
+  try {
+    const { spaces } = await api(
+      `/api/entries/${encodeURIComponent(id)}/spaces?org=${encodeURIComponent(orgGuid)}`,
+    );
+    lists.spaces.set(orgGuid, spaces);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    render();
+  }
+}
+
+/**
+ * Choosing an org targets it right away, exactly as `cf target -o` does, which
+ * leaves no space selected until one is picked from the second dropdown.
+ */
+async function chooseOrg(id, orgSelect) {
+  const guid = orgSelect.value;
+  const name = orgSelect.selectedOptions[0]?.textContent ?? '';
+  if (!guid || !name) return;
+  await switchTarget(id, name, null);
+  await loadSpaces(id, guid);
+}
+
+async function chooseSpace(id, orgSelect, spaceSelect) {
+  const org = orgSelect.selectedOptions[0]?.textContent ?? '';
+  const space = spaceSelect.selectedOptions[0]?.textContent ?? '';
+  if (!org || !spaceSelect.value) return;
+  await switchTarget(id, org, space);
+}
+
+async function switchTarget(id, org, space) {
+  const lists = listsFor(id);
+  lists.busy = true;
+  render();
+  try {
+    await api(`/api/entries/${encodeURIComponent(id)}/target`, {
+      method: 'POST',
+      body: { org, space },
+    });
+    toast(space ? `Switched to ${org} / ${space}` : `Switched to ${org}`);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    lists.busy = false;
+    render();
   }
 }
 
@@ -235,6 +389,8 @@ document.getElementById('submit-passcode').addEventListener('click', async () =>
     });
     passcodeInput.value = '';
     dialog.close();
+    // A fresh session may see different orgs, so the lists start over.
+    targetLists.delete(loginTarget);
     toast(`${result.entry.label} is ${result.entry.status}`);
     loginTarget = null;
   } catch (error) {

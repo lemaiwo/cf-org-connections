@@ -1,4 +1,4 @@
-import type { Entry, Handoff } from '@cf-session-hub/core';
+import type { CfTarget, Entry, Handoff } from '@cf-session-hub/core';
 
 export interface LoginStartResponse {
   entry: Entry;
@@ -78,5 +78,27 @@ export class HubClient {
 
   async handoff(id: string): Promise<Handoff> {
     return this.#request(`/api/entries/${encodeURIComponent(id)}/handoff`);
+  }
+
+  async listOrgs(id: string): Promise<CfTarget[]> {
+    const { orgs } = await this.#request<{ orgs: CfTarget[] }>(
+      `/api/entries/${encodeURIComponent(id)}/orgs`,
+    );
+    return orgs;
+  }
+
+  async listSpaces(id: string, orgGuid: string): Promise<CfTarget[]> {
+    const { spaces } = await this.#request<{ spaces: CfTarget[] }>(
+      `/api/entries/${encodeURIComponent(id)}/spaces?org=${encodeURIComponent(orgGuid)}`,
+    );
+    return spaces;
+  }
+
+  async setTarget(id: string, org: string, space: string | null): Promise<Entry> {
+    const { entry } = await this.#request<{ entry: Entry }>(
+      `/api/entries/${encodeURIComponent(id)}/target`,
+      { method: 'POST', body: JSON.stringify({ org, space }) },
+    );
+    return entry;
   }
 }

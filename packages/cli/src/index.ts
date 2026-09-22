@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import type { Entry } from '@cf-session-hub/core';
+import type { CfTarget, Entry } from '@cf-session-hub/core';
 import { ensureService } from './ensure-service.js';
-import { entriesTable, expiry } from './format.js';
+import { entriesTable, expiry, pickTarget, targetsList } from './format.js';
 import { ask } from './prompt.js';
 import type { HubClient } from './client.js';
 
@@ -97,6 +97,58 @@ program
   });
 
 program
+  .command('orgs')
+  .argument('<name>', 'entry name')
+  .description('List the organizations this entry can see, marking the current one')
+  .action(async (name: string) => {
+    const client = await ensureService();
+    const entry = await resolve(client, name);
+    const orgs = await client.listOrgs(entry.id);
+    process.stdout.write(`${targetsList(orgs, entry.org ?? entry.defaultOrg)}\n`);
+  });
+
+program
+  .command('target')
+  .argument('<name>', 'entry name')
+  .option('-o, --org <org>', 'organization to switch to')
+  .option('-s, --space <space>', 'space to switch to')
+  .description('Switch an entry to another org and space, and remember it as the default')
+  .action(async (name: string, options: { org?: string; space?: string }) => {
+    const client = await ensureService();
+    const entry = await resolve(client, name);
+
+    const org = options.org
+      ? { guid: '', name: options.org }
+      : await choose(await client.listOrgs(entry.id), entry.org ?? entry.defaultOrg, 'organization');
+
+    // Only the interactive path offers spaces: passing -o without -s stays a
+    // plain org switch, so the command never blocks a script on a prompt.
+    let space = options.space ?? null;
+    if (space === null && org.guid) {
+      const spaces = await client.listSpaces(entry.id, org.guid);
+      space = spaces.length === 0 ? null : (await choose(spaces, entry.space, 'space')).name;
+    }
+
+    const updated = await client.setTarget(entry.id, org.name, space);
+    process.stdout.write(
+      `${updated.label} → org ${updated.org ?? org.name}` +
+        `${updated.space ? `, space ${updated.space}` : ''}\n`,
+    );
+  });
+
+/** Shows a numbered list and reads one choice, re-prompting once on a miss. */
+async function choose(items: CfTarget[], current: string | null, what: string): Promise<CfTarget> {
+  if (items.length === 0) fail(`No ${what} available for this entry.`);
+  process.stderr.write(`${targetsList(items, current)}\n`);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const picked = pickTarget(items, await ask(`Choose a ${what} (number or name): `));
+    if (picked) return picked;
+    process.stderr.write(`Not one of the listed ${what}s.\n`);
+  }
+  return fail(`No ${what} chosen.`);
+}
+
+program
   .command('logout')
   .argument('<name>', 'entry name')
   .description('Log the entry out')
@@ -133,11 +185,15 @@ async function resolve(client: HubClient, name: string): Promise<Entry> {
 }
 
 function fail(message: string): never {
-  process.stderr.write(`${message}\n`);
-  process.exit(1);
+  throw new Error(message);
 }
 
+/**
+ * Exiting is left to the event loop. Calling process.exit() here aborts on
+ * Windows — the fetch keep-alive socket is still closing, and libuv asserts on
+ * the handle — so the exit code is set and the process ends on its own.
+ */
 program.parseAsync(process.argv).catch((error: Error) => {
   process.stderr.write(`${error.message}\n`);
-  process.exit(1);
+  process.exitCode = 1;
 });
