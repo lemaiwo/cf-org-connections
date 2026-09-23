@@ -7,7 +7,8 @@ export class LoginEndpointError extends Error {}
 /**
  * Resolves the UAA login endpoint for an entry:
  * 1. `AuthorizationEndpoint` (or `UaaEndpoint`) from the cf config, when present;
- * 2. otherwise `GET <api>/v3/info` and read `links.login.href`.
+ * 2. otherwise `GET <api>/` (the root info) and read `links.login.href` —
+ *    `/v3/info` does not carry the login link.
  */
 export async function resolveLoginEndpoint(
   config: CfConfig | null,
@@ -29,12 +30,12 @@ export async function resolveLoginEndpoint(
 
   let body: unknown;
   try {
-    const response = await fetchImpl(`${stripTrailingSlash(apiUrl.toString())}/v3/info`, {
+    const response = await fetchImpl(`${stripTrailingSlash(apiUrl.toString())}/`, {
       headers: { accept: 'application/json' },
     });
     if (!response.ok) {
       throw new LoginEndpointError(
-        `The CF API answered ${response.status} for /v3/info; cannot resolve the login endpoint.`,
+        `The CF API answered ${response.status} for its root info; cannot resolve the login endpoint.`,
       );
     }
     body = await response.json();
@@ -47,7 +48,7 @@ export async function resolveLoginEndpoint(
 
   const href = readLoginHref(body);
   if (!href || !safeUrl(href)) {
-    throw new LoginEndpointError('The CF API did not report a login endpoint in /v3/info.');
+    throw new LoginEndpointError('The CF API did not report a login endpoint in its root info (links.login).');
   }
   return stripTrailingSlash(href);
 }

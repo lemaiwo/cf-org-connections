@@ -114,7 +114,7 @@ test('the login endpoint comes from the cf config when it is there', async () =>
   assert.equal(passcodeUrl(endpoint), 'https://login.cf.example.com/passcode');
 });
 
-test('the login endpoint otherwise comes from /v3/info', async () => {
+test('the login endpoint otherwise comes from the API root info', async () => {
   const calls: string[] = [];
   const fakeFetch = (async (url: string) => {
     calls.push(String(url));
@@ -126,7 +126,7 @@ test('the login endpoint otherwise comes from /v3/info', async () => {
   }) as unknown as typeof fetch;
 
   const endpoint = await resolveLoginEndpoint(null, 'https://api.cf.example.com', fakeFetch);
-  assert.deepEqual(calls, ['https://api.cf.example.com/v3/info']);
+  assert.deepEqual(calls, ['https://api.cf.example.com/']);
   assert.equal(passcodeUrl(endpoint), 'https://uaa.cf.example.com/passcode');
 });
 
